@@ -1,5 +1,4 @@
-# belt-drive-design-tool
-DisenoTransXBandas V1.0: Flat and V-Belt Drive Design.
+# DisenoTransXBandas V1.0: Flat and V-Belt Drive Design.
 # Belt Drive Design Tool
 
 A desktop engineering application for the automated sizing and design of **V-belt** and **flat belt** power transmission systems, developed as a mechanical engineering capstone project at Universidad Industrial de Santander (Colombia).
