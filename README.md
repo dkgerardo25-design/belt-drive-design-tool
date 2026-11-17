@@ -1,9 +1,16 @@
-# DisenoTransXBandas V1.0: Flat and V-Belt Drive Design.
 # Belt Drive Design Tool
 
 A desktop engineering application for the automated sizing and design of **V-belt** and **flat belt** power transmission systems, developed as a mechanical engineering capstone project at Universidad Industrial de Santander (Colombia).
 
-The tool fills a real gap in commercial software: while V-belt design tools exist, no widely available desktop application handles **flat belt** sizing to ISO 22 / BS 3790 standards with catalog-driven output.
+The tool fills a real gap in commercial software: while V-belt design tools exist, no widely available desktop application handles **flat belt** sizing to ISO 22:1991 / BS 3790 standards with catalog-driven output.
+
+---
+
+## Screenshot
+
+![Belt Drive Design Tool — main interface](docs/screenshot.png)
+
+*V-belt design session showing input parameters, calculation memory, machine service factor guide, and auto-generated transmission drawing.*
 
 ---
 
@@ -17,8 +24,8 @@ The tool fills a real gap in commercial software: while V-belt design tools exis
 - Automatic belt selection from commercial catalog lengths
 - Number-of-belts calculation with correction for contact angle and belt length
 
-### Flat Belt Design (ISO 22)
-- Catalog-driven width selection from ISO 22 standard series
+### Flat Belt Design (ISO 22:1991)
+- Catalog-driven width selection from ISO 22:1991 standard series
 - Euler–Eytelwein equation with centrifugal force correction
 - Pulley correction factors per Shigley Table 17-4
 - Metric and imperial width normalization
@@ -68,7 +75,7 @@ The application follows a four-layer architecture:
 | File | Lines | Role |
 |------|-------|------|
 | `nucleo_diseno_correas.py` | ~900 | V-belt design: profile selection, belt tensions (T₁, T₂, T₀), shaft load, SVG generation |
-| `nucleo_diseno_planas.py` | 1,003 | Flat belt design: Euler–Eytelwein solver, ISO 22 width catalog, unit conversion |
+| `nucleo_diseno_planas.py` | 1,003 | Flat belt design: Euler–Eytelwein solver, ISO 22:1991 width catalog, unit conversion |
 | `visualizacion_correas.py` | 797 | SVG template substitution with font-metric-aware text centering (Arial, DejaVu, Century Gothic) |
 | `interfaz_grafica.py` | 992 | Tkinter GUI with live unit switching, machine guide table, SVG→PNG rendering |
 
@@ -99,7 +106,7 @@ pip install numpy pandas scipy Pillow cairosvg
 | Standard | Applies to |
 |----------|-----------|
 | **ISO 4184** | V-belt groove profiles and dimensions |
-| **ISO 22** | Flat belt widths and tolerances |
+| **ISO 22:1991** | Flat belt widths and tolerances |
 | **BS 3790** | V-belt drive design method |
 | **Shigley's MED** | Service factors, pulley correction factors (Tables 17-3, 17-4) |
 
@@ -127,7 +134,7 @@ The thermodynamic analysis module referenced in the paper (multi-stage steam cyc
 
 **Gerardo Alarcon Baldovino**  
 Mechanical Engineering — Universidad Industrial de Santander  
-[LinkedIn](https://linkedin.com/in/gerardo-alarcon) · gerardoalarconila@gmail.com
+[LinkedIn](https://www.linkedin.com/in/gerardoalarconb) · dkgerardo25@gmail.com
 
 ---
 
