@@ -65,8 +65,10 @@ class ResultadosDiseno:
     referencia_comercial_correa: str
     distancia_ejes_final: float
     angulo_contacto_pequena_g: float
-    factor_angulo_c1: float
-    factor_longitud_c3: float
+    # Factor de corrección ÚNICO del procedimiento de INTERMEC (Manual técnico de poleas
+    # en "V", p. 24). Se lee de la relación (D − d)/C y multiplica los HP por canal.
+    # Reemplaza al par C1 (arco de contacto) · C3 (longitud) que se usaba antes.
+    factor_correccion: float
     potencia_corregida_banda: float
     num_bandas_entero: int
     velocidad_lineal: float
@@ -99,8 +101,9 @@ class ResultadosDiseno:
     referencia_comercial_polea_2: str = ""
     alerta_flexion_1: str = ""
     alerta_flexion_2: str = ""
-    # Capacidad leída directamente de la tabla, ANTES de aplicar C1 y C3. Se conserva
-    # para poder mostrar en la memoria de cálculo de dónde sale la potencia corregida.
+    # Capacidad leída directamente de la tabla, ANTES de aplicar el factor de corrección.
+    # Se conserva para poder mostrar en la memoria de cálculo de dónde sale la potencia
+    # corregida.
     potencia_nominal_banda: float = 0.0
     # Diámetro exterior con el que efectivamente se entró a la tabla de capacidad.
     diametro_exterior_consulta: float = 0.0
@@ -138,6 +141,15 @@ class ResultadosDiseno:
     fuerza_efectiva_te_banda: float = 0.0
     carga_dinamica_eje_banda: float = 0.0
     masa_lineal_correa: float = 0.0
+    # Relación (D − d)/C con la que se entró a la tabla de INTERMEC y aviso si quedó fuera
+    # del rango tabulado.
+    relacion_dc: float = 0.0
+    alerta_factor_correccion: str = ""
+    # Diámetros PRIMITIVOS de la conductora y la conducida. D1 y D2 están en la convención
+    # del programa (exterior fuera de las métricas); estos son los nominales, los mismos
+    # que ingresa el usuario.
+    dp1: float = 0.0
+    dp2: float = 0.0
 
 
 class CapacidadFHPInsuficiente(ValueError):
@@ -400,7 +412,7 @@ class BaseDatosCorreas:
         self.pot_nominal = pd.read_excel(self.xls, "pot_nominal", header=None)
         self.tablas_potencia = self._parsear_pot_nominal()
 
-        self.c1_tabla, self.c3_tabla = self._parsear_factores_correccion()
+        self.tabla_factor_correccion = self._parsear_factor_correccion()
 
         self.c2_factores = parsear_factor_servicio_c2(
             pd.read_excel(self.xls, "Factor_Servicio_c2", header=None)
@@ -603,42 +615,40 @@ class BaseDatosCorreas:
 
         return tablas
 
-    def _parsear_factores_correccion(self) -> Tuple[Optional[pd.DataFrame], Optional[pd.DataFrame]]:
-        """Separa la hoja 'Factores_correcion' en sus dos bloques.
+    def _parsear_factor_correccion(self) -> Optional[pd.DataFrame]:
+        """Lee de la hoja 'Factores_correcion' la tabla del factor de corrección de
+        INTERMEC (Manual técnico de poleas en "V", p. 24):
 
-        Bloque 1: 'rel_diametro | Ángulo_contacto | C1'  → factor por arco de contacto.
-        Bloque 2: 'Perfil | longitud_mm | C3'            → factor por longitud de correa.
+            (D − d)/C | arco de contacto | factor de corrección
 
-        La hoja los apila uno debajo del otro, así que el corte se localiza por la fila
-        de encabezado del segundo bloque en vez de por un número de fila fijo.
+        Es el único factor que corrige la capacidad por canal. Antes la hoja traía además
+        un segundo bloque 'Perfil | longitud_mm | C3' con el factor por longitud de
+        correa; ese bloque YA NO SE USA. Si sigue en la hoja no estorba: la lectura se
+        detiene en la primera fila cuya columna A no sea numérica (el encabezado del
+        bloque viejo, o cualquier título que se ponga debajo), de modo que la hoja no
+        necesita editarse.
+
+        La fila 1 se toma como encabezado y se descarta. Las filas con celdas no numéricas
+        en la relación o en el factor se ignoran.
         """
         try:
             df = pd.read_excel(self.xls, "Factores_correcion", header=None)
         except Exception:
-            return None, None
+            return None
 
-        fila_c3 = None
-        for r in range(df.shape[0]):
-            fila = [str(v).strip().lower() for v in df.iloc[r].tolist()]
-            if 'perfil' in fila and any('longitud' in v for v in fila):
-                fila_c3 = r
+        fin = df.shape[0]
+        for r in range(1, df.shape[0]):
+            celda = str(df.iloc[r, 0]).strip()
+            if celda and celda.lower() not in ('nan', 'none') \
+                    and pd.isna(pd.to_numeric(celda, errors='coerce')):
+                fin = r
                 break
 
-        fin_c1 = fila_c3 if fila_c3 is not None else df.shape[0]
-        c1 = df.iloc[1:fin_c1, [0, 1, 2]].copy()
-        c1.columns = ['rel_diametro', 'angulo_contacto', 'C1']
-        c1 = c1.apply(pd.to_numeric, errors='coerce').dropna(subset=['rel_diametro', 'C1'])
-        c1 = c1.sort_values('rel_diametro').reset_index(drop=True)
-
-        c3 = None
-        if fila_c3 is not None:
-            c3 = df.iloc[fila_c3 + 1:, [0, 1, 2]].copy()
-            c3.columns = ['perfil', 'longitud_mm', 'C3']
-            c3['perfil'] = c3['perfil'].astype(str).str.strip().str.upper()
-            c3[['longitud_mm', 'C3']] = c3[['longitud_mm', 'C3']].apply(pd.to_numeric, errors='coerce')
-            c3 = c3.dropna(subset=['longitud_mm', 'C3'])
-
-        return (c1 if not c1.empty else None), (c3 if (c3 is not None and not c3.empty) else None)
+        tabla = df.iloc[1:fin, [0, 1, 2]].copy()
+        tabla.columns = ['rel_dc', 'angulo_contacto', 'factor']
+        tabla = tabla.apply(pd.to_numeric, errors='coerce').dropna(subset=['rel_dc', 'factor'])
+        tabla = tabla.sort_values('rel_dc').drop_duplicates('rel_dc').reset_index(drop=True)
+        return tabla if not tabla.empty else None
 
 
 def parsear_factor_servicio_c2(df_raw_c2: pd.DataFrame) -> pd.DataFrame:
@@ -975,6 +985,29 @@ def convertir_diametro_desde_tabla(perfil: str, familia: str, diametro_tabla_mm:
     return diametro_tabla_mm + offset
 
 
+def offset_primitivo_programa(perfil: str, familia: str, db: BaseDatosCorreas) -> float:
+    """Lo que hay que SUMAR al diámetro primitivo para obtener el diámetro con que el
+    programa designa y fabrica la polea.
+
+    El usuario siempre ingresa el diámetro PRIMITIVO (nominal). Internamente las poleas
+    métricas se manejan en primitivo (offset 0) y las americanas, de alta capacidad y de
+    servicio liviano en exterior. Esta función es el único punto donde se decide cuánto
+    vale esa diferencia, para que la ida (primitivo -> exterior) y la vuelta usen siempre
+    el mismo número:
+
+      • Servicio liviano: 2a de la tabla ANSI/RMA IP-23 (d0 = d + 2a), el mismo valor con
+        el que DisenadorFHP evalúa su ecuación.
+      • Americanas y alta capacidad: 2·b, con b la altura sobre la línea primitiva
+        (OFFSET_DATUM_EXTERIOR_CLASICAS o columna 'b_mm' de la hoja 'perfiles_v').
+    """
+    if convencion_diametro_programa(perfil, familia) == 'dd':
+        return 0.0
+    clave = str(perfil).strip().upper()
+    if clave in DisenadorFHP.PARAMETROS:
+        return DisenadorFHP.dos_a_mm(clave)
+    return 2.0 * obtener_offset_datum_exterior(clave, db)
+
+
 def diametros_candidatos(perfil: str, familia: str, db: BaseDatosCorreas) -> List[float]:
     """Diámetros comerciales entre los que buscar la polea, en la convención del programa.
 
@@ -1124,30 +1157,41 @@ def obtener_potencia_nominal_por_banda(perfil: str, n_pequena: float, diametro_t
     return potencia_total * factor, aviso
 
 
-def obtener_factor_c1(relacion_diametro: float, db: BaseDatosCorreas) -> float:
-    """Factor de corrección por arco de contacto C1, interpolado sobre la relación
-    (D_grande − D_pequeña)/C de la hoja 'Factores_correcion'. Con ejes muy separados la
-    relación tiende a 0 y C1 a 1; al acercarse los ejes el arco se reduce y C1 baja."""
-    if db.c1_tabla is None or db.c1_tabla.empty:
-        return 1.0
-    x = db.c1_tabla['rel_diametro'].values.astype(float)
-    y = db.c1_tabla['C1'].values.astype(float)
-    return float(np.interp(float(relacion_diametro), x, y))
+def obtener_factor_correccion(relacion_dc: float, db: BaseDatosCorreas) -> Tuple[float, str]:
+    """Factor de corrección ÚNICO de INTERMEC (Manual técnico de poleas en "V", p. 24).
 
+    El procedimiento del fabricante es: calcular (D − d)/C, con D y d los diámetros de la
+    polea mayor y de la menor y C la distancia entre centros; leer en su tabla el factor
+    que le corresponde y multiplicarlo por los HP por canal de la polea conductora. Con
+    ejes muy separados la relación tiende a 0 y el factor a 1; al acercarse los ejes el
+    arco de contacto sobre la polea menor se reduce y el factor baja.
 
-def obtener_factor_c3(perfil: str, longitud_mm: float, db: BaseDatosCorreas) -> float:
-    """Factor de corrección por longitud de correa C3, interpolado por perfil sobre la
-    hoja 'Factores_correcion'. Una correa más larga flexiona menos veces por minuto y
-    admite algo más de potencia (C3 > 1); una más corta penaliza (C3 < 1)."""
-    if db.c3_tabla is None or db.c3_tabla.empty:
-        return 1.0
-    sub = db.c3_tabla[db.c3_tabla['perfil'] == str(perfil).strip().upper()]
-    if sub.empty:
-        return 1.0
-    sub = sub.sort_values('longitud_mm')
-    return float(np.interp(float(longitud_mm),
-                           sub['longitud_mm'].values.astype(float),
-                           sub['C3'].values.astype(float)))
+    No importa si D y d se toman exteriores o primitivos: la diferencia entre ambos es la
+    misma constante para las dos poleas de un mismo perfil, así que D − d no cambia.
+
+    Entre filas de la tabla se interpola linealmente. Por encima de la última fila el
+    valor se satura en el extremo (no se extrapola) y se devuelve una advertencia, porque
+    INTERMEC recomienda que el arco de contacto sobre la polea pequeña quede entre 120° y
+    180°, y salir de la tabla indica una distancia entre centros demasiado corta.
+
+    Devuelve (factor, advertencia).
+    """
+    tabla = db.tabla_factor_correccion
+    if tabla is None or tabla.empty:
+        return 1.0, ("No se encontró la tabla del factor de corrección en la hoja "
+                     "'Factores_correcion'; se usó factor 1,00 (sin corrección).")
+
+    x = tabla['rel_dc'].values.astype(float)
+    y = tabla['factor'].values.astype(float)
+    rel = max(0.0, float(relacion_dc))
+
+    aviso = ""
+    if rel > x.max() + 1e-9:
+        aviso = (f"La relación (D − d)/C = {rel:.3f} supera el último valor de la tabla de "
+                 f"INTERMEC ({x.max():.2f}); se usó el factor del extremo ({y[-1]:.2f}). "
+                 f"La distancia entre centros es muy corta para estos diámetros: conviene "
+                 f"aumentarla para recuperar arco de contacto.")
+    return float(np.interp(rel, x, y)), aviso
 
 
 def generar_especificacion_comercial_polea(perfil: str, dp_teorico: float, z: int, familia: str) -> Tuple[float, str, str]:
@@ -1750,7 +1794,7 @@ def referencia_polea_a_medida(perfil: str, familia: str, diametro_mm: float, z: 
     catálogo, porque no existe en stock: se fabrica a medida."""
     conv = "dd" if convencion_diametro_programa(perfil, familia) == 'dd' else "De"
     canales = "monocanal" if int(z) == 1 else f"{int(z)} canales"
-    medida = f"{diametro_mm / 25.4:.2f} pulg" if is_ing else f"{diametro_mm:.0f} mm"
+    medida = f"{diametro_mm / 25.4:.2f} pulg" if is_ing else f"{diametro_mm:.1f} mm"
     return f"Polea a medida {canales} {str(perfil).strip().upper()}, {conv} = {medida}"
 
 
@@ -1804,45 +1848,48 @@ def ejecutar_diseno_transmision(potencia_in, n1, n2, tipo_motor, tipo_transmisio
     es_fhp = (familia.upper() == "SERVICIO_LIVIANO")
 
     # =================================================================================
-    #  DIÁMETRO DE POLEA A PARTIR DEL TEÓRICO
-    #  Único punto donde se decide entre normalizar a la serie comercial o dejar el valor
-    #  teórico. Recibe el diámetro PRIMITIVO teórico y devuelve el diámetro en la
-    #  convención con que trabaja el programa (primitivo en métricas, exterior en el resto).
+    #  DIÁMETRO DE POLEA A PARTIR DEL PRIMITIVO
+    #  El usuario ingresa SIEMPRE el diámetro primitivo (nominal), en cualquier familia.
+    #  La cinemática y la geometría (relación de transmisión, velocidad de la correa,
+    #  longitud primitiva, distancia entre centros y arco de contacto) se calculan con
+    #  primitivos; el diámetro exterior solo se usa para designar, fabricar y entrar a las
+    #  tablas del catálogo que están rotuladas en exterior.
+    #
+    #  Estas dos funciones son el único punto de conversión. Antes cada familia lo
+    #  resolvía por su lado: en alta capacidad no se restaba nada, de modo que la relación
+    #  y la velocidad salían sobre el exterior, y en la americana el diámetro de entrada se
+    #  trataba como primitivo pero los candidatos automáticos (que ya eran exteriores)
+    #  recibían el offset otra vez.
     # =================================================================================
     es_americana_clasica = (familia.upper() == "AMERICANA")
 
-    def a_primitivo(perfil_actual: str, d_programa: float) -> float:
-        """Inverso de la conversión primitivo -> exterior de las poleas americanas.
+    def offset_pe(perfil_actual: str) -> float:
+        return offset_primitivo_programa(perfil_actual, familia, db)
 
-        La relación de transmisión se cumple entre diámetros PRIMITIVOS. Antes el diámetro
-        conducido se obtenía multiplicando el EXTERIOR de la conductora por i y sumándole
-        otra vez el offset de la ranura, de modo que este se contaba dos veces y la
-        relación real se desviaba (1,93 en lugar de 1,80 en una prueba con perfil C).
-        """
-        clave = str(perfil_actual).strip().upper()
-        if es_americana_clasica and clave in OFFSET_DATUM_EXTERIOR_CLASICAS:
-            return d_programa - 2 * OFFSET_DATUM_EXTERIOR_CLASICAS[clave]
-        if es_fhp and clave in DisenadorFHP.PARAMETROS:
-            # Perfiles livianos: diámetro de paso d = d0 − 2a (ANSI/RMA IP-23).
-            return d_programa - DisenadorFHP.dos_a_mm(clave)
-        return d_programa
+    def a_primitivo(perfil_actual: str, d_programa: float) -> float:
+        """Diámetro de la polea en la convención del programa -> diámetro primitivo."""
+        return d_programa - offset_pe(perfil_actual)
 
     def diametro_polea(perfil_actual: str, dd_teorico: float, hacia_arriba: bool = False) -> float:
-        """Recibe el diámetro PRIMITIVO (o de paso) teórico y devuelve el de la polea en la
-        convención del programa: primitivo en métricas, exterior en el resto."""
-        d = dd_teorico
+        """Recibe el diámetro PRIMITIVO teórico y devuelve el de la polea en la convención
+        del programa: primitivo en métricas, exterior en el resto.
+
+        Con normalización se lleva al valor comercial más cercano: serie R40 en métricas,
+        media pulgada de diámetro exterior en americanas y décimo de pulgada en alta
+        capacidad y livianas. Sin normalización se redondea el PRIMITIVO al mm (o a
+        0,01 pulg) y después se le suma el offset: así el primitivo que ingresó el usuario
+        se conserva exacto y el exterior queda como resulte (redondear el exterior corría
+        el primitivo unas décimas de milímetro).
+        """
         clave = str(perfil_actual).strip().upper()
-        if es_americana_clasica and clave in OFFSET_DATUM_EXTERIOR_CLASICAS:
-            if normalizar_diametros:
+        d_programa = dd_teorico + offset_pe(perfil_actual)
+        if normalizar_diametros:
+            if es_americana_clasica and clave in OFFSET_DATUM_EXTERIOR_CLASICAS:
+                # Esta rama de generar_especificacion_comercial_polea() recibe el
+                # primitivo y le suma el offset ella misma.
                 return generar_especificacion_comercial_polea(perfil_actual, dd_teorico, 1, familia)[0]
-            d = dd_teorico + 2 * OFFSET_DATUM_EXTERIOR_CLASICAS[clave]
-        elif es_fhp and clave in DisenadorFHP.PARAMETROS:
-            d = dd_teorico + DisenadorFHP.dos_a_mm(clave)
-            if normalizar_diametros:
-                return generar_especificacion_comercial_polea(perfil_actual, d, 1, familia)[0]
-        elif normalizar_diametros:
-            return generar_especificacion_comercial_polea(perfil_actual, dd_teorico, 1, familia)[0]
-        return redondear_fabricacion(d, is_ing, hacia_arriba)
+            return generar_especificacion_comercial_polea(perfil_actual, d_programa, 1, familia)[0]
+        return redondear_fabricacion(dd_teorico, is_ing, hacia_arriba) + offset_pe(perfil_actual)
 
     # =================================================================================
     #  GEOMETRÍA DE LA TRANSMISIÓN
@@ -1866,16 +1913,23 @@ def ejecutar_diseno_transmision(potencia_in, n1, n2, tipo_motor, tipo_transmisio
         rango se deja constancia en el informe.
         """
         aviso_centros = ""
+        # La longitud primitiva Ld se mide sobre la línea primitiva de la correa, así que
+        # se calcula con los diámetros PRIMITIVOS. Antes, en americanas, alta capacidad y
+        # livianas se usaban los exteriores, lo que alargaba Ld en π·(offset) y dejaba la
+        # distancia entre centros corta. La conversión a longitud interna (Li) o exterior
+        # (La) la hace después convertir_y_seleccionar_longitud(), según el perfil.
+        dp_peq = a_primitivo(perfil_actual, d_peq)
+        dp_gra = a_primitivo(perfil_actual, d_gra)
         if is_fixed_center:
             c_prelim = c_fijo_mm
         elif modo_centros.upper() == "RANGO" and c_min_mm is not None and c_max_mm is not None:
             c_prelim = (c_min_mm + c_max_mm) / 2.0
         else:
-            c_prelim = 0.7 * (d_peq + d_gra) + d_gra
+            c_prelim = 0.7 * (dp_peq + dp_gra) + dp_gra
 
-        ld_teorico = 2 * c_prelim + 1.5708 * (d_peq + d_gra) + ((d_gra - d_peq)**2) / (4 * c_prelim)
-        info = convertir_y_seleccionar_longitud(perfil_actual, ld_teorico, db, familia, d_peq, d_gra)
-        c_final = calcular_distancia_centros_desde_longitud(info["Ld_comercial_mm"], d_peq, d_gra)
+        ld_teorico = 2 * c_prelim + 1.5708 * (dp_peq + dp_gra) + ((dp_gra - dp_peq)**2) / (4 * c_prelim)
+        info = convertir_y_seleccionar_longitud(perfil_actual, ld_teorico, db, familia, dp_peq, dp_gra)
+        c_final = calcular_distancia_centros_desde_longitud(info["Ld_comercial_mm"], dp_peq, dp_gra)
 
         if is_fixed_center:
             aviso_centros = (
@@ -1918,27 +1972,31 @@ def ejecutar_diseno_transmision(potencia_in, n1, n2, tipo_motor, tipo_transmisio
                 dmin_perfil = val_dmin_tabla
         dmin_gobernante = max(dmin_motor_efectivo, dmin_perfil)
 
+        # En las tres ramas d1_arranque queda como diámetro PRIMITIVO, que es lo que recibe
+        # diametro_polea().
         if is_fixed_diameter:
-            if not normalizar_diametros:
-                d1_arranque = d1_mm_base
-            elif familia.upper() == "AMERICANA":
-                d1_arranque = redondear_clasica_stock(d1_mm_base)
-            else:
-                d1_arranque = redondear_serie_r40(d1_mm_base)
+            # El usuario ingresa el primitivo (nominal). Se pasa tal cual: diametro_polea()
+            # le suma el offset de la familia y, si corresponde, lo normaliza. Antes se
+            # redondeaba aquí a una serie y luego otra vez allá.
+            d1_arranque = d1_mm_base
         elif not normalizar_diametros:
             # Sin normalizar, cualquier diámetro cumple la relación de transmisión exacta,
             # así que se parte del MÍNIMO gobernante. Si con él hicieran falta más correas
             # de las de stock, más abajo se lanza el error y el llamador escala de perfil.
-            d1_arranque = dmin_gobernante
+            # El mínimo está en la convención del programa; se lleva a primitivo.
+            d1_arranque = a_primitivo(perfil_actual, dmin_gobernante)
         else:
-            lista_candidatos = diametros_candidatos(perfil_actual, familia, db)
+            # Los candidatos vienen en la convención del programa (exterior fuera de las
+            # métricas) y se llevan a primitivo antes de normalizar, para no sumarles el
+            # offset dos veces.
+            lista_candidatos = [a_primitivo(perfil_actual, d)
+                                for d in diametros_candidatos(perfil_actual, familia, db)]
             # El mínimo gobernante se compara contra el diámetro COMERCIAL que resultará
             # de cada candidato, no contra el candidato crudo: al normalizar al valor más
             # cercano, un candidato apenas por encima del mínimo podría bajar de él.
             candidatos_validos = [
                 d for d in lista_candidatos
-                if generar_especificacion_comercial_polea(perfil_actual, d, 1, familia)[0]
-                >= dmin_gobernante - 0.01
+                if d > 0 and diametro_polea(perfil_actual, d) >= dmin_gobernante - 0.01
             ]
             if not candidatos_validos:
                 raise ValueError(
@@ -1951,9 +2009,12 @@ def ejecutar_diseno_transmision(potencia_in, n1, n2, tipo_motor, tipo_transmisio
             mejor_opcion = None
             min_error_i = 999.0
             for d1_cand in candidatos_validos[:10]:
-                d1_test, _, _ = generar_especificacion_comercial_polea(perfil_actual, d1_cand, 1, familia)
-                d2_test, _, _ = generar_especificacion_comercial_polea(perfil_actual, d1_cand * i, 1, familia)
-                i_real = max(d1_test, d2_test) / min(d1_test, d2_test)
+                d1_test = diametro_polea(perfil_actual, d1_cand)
+                d2_test = diametro_polea(perfil_actual, a_primitivo(perfil_actual, d1_test) * i)
+                # Relación real entre PRIMITIVOS, que es entre los que se cumple.
+                dp1_t = a_primitivo(perfil_actual, d1_test)
+                dp2_t = a_primitivo(perfil_actual, d2_test)
+                i_real = max(dp1_t, dp2_t) / min(dp1_t, dp2_t)
                 error_i = abs(i_real - i)
                 try:
                     d_tabla, _ = adaptar_diametro_a_tabla(
@@ -1970,8 +2031,8 @@ def ejecutar_diseno_transmision(potencia_in, n1, n2, tipo_motor, tipo_transmisio
                         mejor_opcion = d1_cand
             d1_arranque = mejor_opcion if mejor_opcion is not None else candidatos_validos[0]
 
-        # Diámetros definitivos. El número de canales todavía no se conoce (depende de C1 y
-        # C3, que dependen de la geometría); el DIÁMETRO no depende de él.
+        # Diámetros definitivos. El número de canales todavía no se conoce (depende del
+        # factor de corrección, que depende de la geometría); el DIÁMETRO no depende de él.
         if is_fixed_diameter:
             # El diámetro ingresado es el de la CONDUCTORA, y D2 = D1·n1/n2 vale tanto en
             # reducción como en aumento. Antes se trataba siempre como la polea pequeña,
@@ -1990,16 +2051,16 @@ def ejecutar_diseno_transmision(potencia_in, n1, n2, tipo_motor, tipo_transmisio
 
         geo = resolver_geometria(d_peq, d_gra, perfil_actual)
 
-        # Capacidad por banda y número de canales. Con la geometría cerrada ya se pueden
-        # evaluar C1 (arco de contacto) y C3 (longitud):  N = Pd / (P_banda · C1 · C3)
+        # Capacidad por banda y número de canales, según el procedimiento de INTERMEC:
+        # con la geometría cerrada se calcula (D − d)/C, se lee el factor de corrección y
+        # se multiplica por los HP por canal.   N = Pd / (P_canal · Fc)
         d_tabla, conv = adaptar_diametro_a_tabla(perfil_actual, familia, d_peq, db)
         p_nom_kw, aviso = obtener_potencia_nominal_por_banda(
             perfil_actual, rpm_peq, d_tabla, db, i
         )
-        relacion_diametro = (d_gra - d_peq) / geo["C_final"] if geo["C_final"] > 0 else 0.0
-        c1 = obtener_factor_c1(relacion_diametro, db)
-        c3 = obtener_factor_c3(perfil_actual, geo["info"]["Ld_comercial_mm"], db)
-        p_corr_kw = p_nom_kw * c1 * c3
+        relacion_dc = (d_gra - d_peq) / geo["C_final"] if geo["C_final"] > 0 else 0.0
+        fc, aviso_fc = obtener_factor_correccion(relacion_dc, db)
+        p_corr_kw = p_nom_kw * fc
         if p_corr_kw <= 0:
             raise ValueError(f"Capacidad corregida nula para el perfil {perfil_actual}.")
 
@@ -2014,7 +2075,8 @@ def ejecutar_diseno_transmision(potencia_in, n1, n2, tipo_motor, tipo_transmisio
         return {
             "perfil": perfil_actual, "dmin_perfil": dmin_perfil, "dmin_gobernante": dmin_gobernante,
             "D1_final": d1_final, "D2_final": d2_final, "D_peq": d_peq, "D_grande": d_gra,
-            "geo": geo, "c1": c1, "c3": c3, "p_nom_kw": p_nom_kw, "p_corr_kw": p_corr_kw,
+            "geo": geo, "factor_correccion": fc, "relacion_dc": relacion_dc,
+            "aviso_fc": aviso_fc, "p_nom_kw": p_nom_kw, "p_corr_kw": p_corr_kw,
             "n_bandas": n_bandas, "diametro_tabla": d_tabla, "convencion": conv, "aviso": aviso
         }
 
@@ -2022,8 +2084,9 @@ def ejecutar_diseno_transmision(potencia_in, n1, n2, tipo_motor, tipo_transmisio
     #  SELECCIÓN DE PERFIL
     # =================================================================================
     if es_fhp:
-        # El método FHP no pasa por tabla de catálogo ni por C1 y C3: su ecuación de
-        # ajuste ya está formulada sobre la geometría real de la transmisión.
+        # El método FHP no pasa por tabla de catálogo ni por el factor de corrección de
+        # INTERMEC: su ecuación de ajuste ya está formulada sobre la geometría real de la
+        # transmisión.
         #
         # Estas correas son SIEMPRE monocanal. Por eso no existe un "número de correas"
         # que ajustar: si una sola correa no alcanza la potencia, la salida no es poner
@@ -2053,10 +2116,13 @@ def ejecutar_diseno_transmision(potencia_in, n1, n2, tipo_motor, tipo_transmisio
             Lanza CapacidadFHPInsuficiente si ese perfil no puede con una sola correa,
             para que el llamador escale al siguiente.
             """
-            # El diámetro ingresado es el de la CONDUCTORA; el método FHP razona sobre la
-            # polea PEQUEÑA. Se traduce por perfil, porque 2a depende del perfil.
-            d1_manual_in_fhp = (conductora_a_pequena_in(d1_mm_base, perfil_actual)
-                                if d1_mm_base else None)
+            # El diámetro ingresado es el PRIMITIVO (de paso) de la CONDUCTORA; el método FHP
+            # razona sobre el EXTERIOR de la polea PEQUEÑA. Se suma 2a y se traduce por
+            # perfil, porque 2a depende del perfil.
+            d1_manual_in_fhp = (
+                conductora_a_pequena_in(d1_mm_base + DisenadorFHP.dos_a_mm(perfil_actual),
+                                        perfil_actual)
+                if d1_mm_base else None)
             d_calc_in, dmin_perfil_in, alerta_usr = dis.diametro_para_potencia(
                 hp_d_fhp, rpm_peq, perfil_actual, d1_manual_in_fhp
             )
@@ -2177,8 +2243,10 @@ def ejecutar_diseno_transmision(potencia_in, n1, n2, tipo_motor, tipo_transmisio
             minimos: List[str] = []
             for p_fhp in DisenadorFHP.ORDEN_PERFILES:
                 try:
+                    # Se informa en PRIMITIVO, que es como lo ingresa el usuario.
                     d_min_in = pequena_a_conductora_in(
-                        dis.calcular_diametro_minimo(hp_d_fhp, rpm_peq, p_fhp), p_fhp)
+                        dis.calcular_diametro_minimo(hp_d_fhp, rpm_peq, p_fhp), p_fhp
+                    ) - DisenadorFHP.PARAMETROS[p_fhp]['dos_a']
                     d_min_mm = d_min_in * 25.4
                     minimos.append(f"{p_fhp} = {d_min_in:.2f} pulg" if u_in
                                    else f"{p_fhp} = {d_min_mm:.1f} mm")
@@ -2189,7 +2257,7 @@ def ejecutar_diseno_transmision(potencia_in, n1, n2, tipo_motor, tipo_transmisio
             raise ValueError(
                 f"Con D1 = {d_usr_txt} ningún perfil de servicio liviano transmite "
                 f"{hp_d_fhp:.2f} HP a {rpm_peq:.0f} RPM con una sola correa.\n"
-                f"   Diámetro mínimo necesario de la polea conductora: {'; '.join(minimos)}.\n"
+                f"   Diámetro primitivo mínimo necesario de la polea conductora: {'; '.join(minimos)}.\n"
                 f"   Suba el diámetro o use un perfil clásico (A) o métrico (SPZ), que sí "
                 f"admiten varias correas.\n   Detalle por perfil:\n   • {detalle}"
             )
@@ -2226,7 +2294,11 @@ def ejecutar_diseno_transmision(potencia_in, n1, n2, tipo_motor, tipo_transmisio
                         aviso_factor_servicio) if x
         )
 
-        c1 = c3 = 1.0
+        # La ecuación FHP no lleva factor de corrección: se registra 1,00 y la memoria
+        # de cálculo lo indica como "no aplica".
+        factor_corr = 1.0
+        relacion_dc = (D_gra_mm - D_peq_mm) / geo["C_final"] if geo["C_final"] > 0 else 0.0
+        aviso_fc = ""
         p_nominal_banda_kw = p_corr_kw = solucion_fhp["capacidad_hp"] * KW_POR_HP
         n_bandas = 1
         # Se guarda el diámetro de PASO con que se evaluó la ecuación, para que la memoria
@@ -2270,7 +2342,9 @@ def ejecutar_diseno_transmision(potencia_in, n1, n2, tipo_motor, tipo_transmisio
         D1_final, D2_final = solucion["D1_final"], solucion["D2_final"]
         D_peq_mm, D_gra_mm = solucion["D_peq"], solucion["D_grande"]
         geo = solucion["geo"]
-        c1, c3 = solucion["c1"], solucion["c3"]
+        factor_corr = solucion["factor_correccion"]
+        relacion_dc = solucion["relacion_dc"]
+        aviso_fc = solucion["aviso_fc"]
         p_nominal_banda_kw = solucion["p_nom_kw"]
         p_corr_kw = solucion["p_corr_kw"]
         n_bandas = solucion["n_bandas"]
@@ -2399,8 +2473,7 @@ def ejecutar_diseno_transmision(potencia_in, n1, n2, tipo_motor, tipo_transmisio
         referencia_comercial_correa=info_comercial["referencia_comercial"],
         distancia_ejes_final=C_final,
         angulo_contacto_pequena_g=ang,
-        factor_angulo_c1=c1,
-        factor_longitud_c3=c3,
+        factor_correccion=factor_corr,
         potencia_corregida_banda=p_corr_kw,
         num_bandas_entero=n_bandas,
         velocidad_lineal=v,
@@ -2453,7 +2526,11 @@ def ejecutar_diseno_transmision(potencia_in, n1, n2, tipo_motor, tipo_transmisio
         capacidad_total_kw=p_corr_kw * n_bandas,
         factor_seguridad_potencia=(p_corr_kw * n_bandas / pd_kw_base) if pd_kw_base > 0 else 0.0,
         c_min_usuario=c_min_mm if (modo_centros.upper() == "RANGO" and not is_fixed_center) else None,
-        c_max_usuario=c_max_mm if (modo_centros.upper() == "RANGO" and not is_fixed_center) else None
+        c_max_usuario=c_max_mm if (modo_centros.upper() == "RANGO" and not is_fixed_center) else None,
+        relacion_dc=relacion_dc,
+        alerta_factor_correccion=aviso_fc,
+        dp1=a_primitivo(perfil, D1_final),
+        dp2=a_primitivo(perfil, D2_final)
     )
 
 
@@ -2604,7 +2681,8 @@ def generar_informe_completo(res: ResultadosDiseno, is_ing: bool = False) -> str
     # La convención del diámetro depende del catálogo de cada bloque, así que se nombra
     # según lo que declare la hoja en vez de suponer que siempre es exterior.
     nombre_conv = "diám. primitivo" if res.convencion_diametro_consulta == "dd" else "diám. exterior"
-    if res.convencion_diametro_consulta == "paso":
+    es_fhp_informe = res.convencion_diametro_consulta == "paso"
+    if es_fhp_informe:
         # Perfiles livianos: la capacidad sale de la ecuación, evaluada con el diámetro de
         # paso d = d0 − 2a de la polea pequeña.
         linea_consulta = (f"    • Capacidad obtenida por ecuación FHP con el diámetro de paso "
@@ -2614,12 +2692,35 @@ def generar_informe_completo(res: ResultadosDiseno, is_ing: bool = False) -> str
                           f"{max(res.n1, res.n2):.0f} RPM") if de_consulta > 0 else \
                      "    • Capacidad obtenida por ecuación FHP (no por tabla)"
     linea_alerta = f"\n    • {res.alerta_tabla_potencia}" if res.alerta_tabla_potencia else ""
+
+    # Factor de corrección de INTERMEC. En FHP no aplica: la ecuación de ajuste ya
+    # considera la geometría de la transmisión.
+    if es_fhp_informe:
+        linea_factor = ("    • Factor de Corrección (INTERMEC): no aplica a la ecuación FHP "
+                        "(se toma 1,00)")
+    else:
+        linea_factor = (f"    • Relación (D − d)/C: {res.relacion_dc:.3f}\n"
+                        f"    • Factor de Corrección (INTERMEC, tabla (D − d)/C): "
+                        f"{res.factor_correccion:.3f}")
+        if res.alerta_factor_correccion:
+            linea_factor += f"\n    • ADVERTENCIA: {res.alerta_factor_correccion}"
+
     tipo_accionamiento = ("Motor eléctrico (se aplica el mínimo NEMA de eje)"
                           if res.aplica_criterio_nema
                           else "Distinto de motor eléctrico (el mínimo NEMA no se aplica)")
     linea_diam_usuario = (f"\n    • ADVERTENCIA: {res.alerta_diametro_usuario}"
                           if res.alerta_diametro_usuario else "")
     rotulo_d = "Comercial" if res.diametros_normalizados else "A medida"
+    # Se muestran el primitivo (nominal, el que ingresa el usuario) y el exterior. En las
+    # métricas el programa trabaja en primitivo, así que ahí coinciden con D1 y D2.
+    f_d = (1 / 25.4) if is_ing else 1.0
+    dp1_disp, dp2_disp = res.dp1 * f_d, res.dp2 * f_d
+    if abs(res.D1 - res.dp1) < 1e-6:
+        txt_d1 = f"primitivo {dp1_disp:.2f} {u_d}"
+        txt_d2 = f"primitivo {dp2_disp:.2f} {u_d}"
+    else:
+        txt_d1 = f"primitivo {dp1_disp:.2f} {u_d} | exterior {d1_disp:.2f} {u_d}"
+        txt_d2 = f"primitivo {dp2_disp:.2f} {u_d} | exterior {d2_disp:.2f} {u_d}"
     # La equivalencia en pulgadas solo aporta en sistema métrico; en inglés repetiría el valor.
     eq_d1 = "" if is_ing else f"  ({d1_pulg:.2f} pulg)"
     eq_d2 = "" if is_ing else f"  ({d2_pulg:.2f} pulg)"
@@ -2642,9 +2743,9 @@ def generar_informe_completo(res: ResultadosDiseno, is_ing: bool = False) -> str
     • Perfil Seleccionado: {res.perfil}
     • Referencia Comercial Correa: {res.referencia_comercial_correa}
     • Tipo de Longitud: {res.tipo_longitud_comercial}
-    • D1 ({rotulo_d}): {d1_disp:.2f} {u_d}{eq_d1}  [{res.tipo_polea_1_str}]
+    • D1 ({rotulo_d}): {txt_d1}{eq_d1}  [{res.tipo_polea_1_str}]
       └─ Especificación: {res.referencia_comercial_polea_1}
-    • D2 ({rotulo_d}): {d2_disp:.2f} {u_d}{eq_d2}  [{res.tipo_polea_2_str}]
+    • D2 ({rotulo_d}): {txt_d2}{eq_d2}  [{res.tipo_polea_2_str}]
       └─ Especificación: {res.referencia_comercial_polea_2}
     • Restricción Motor: {mot_str} | Restricción Perfil: {dm_perf:.2f} {u_d}
     • Diámetro Mínimo Gobernador ({dm:.2f} {u_d}): {check}{linea_diam_usuario}{linea_normalizacion}
@@ -2656,10 +2757,9 @@ def generar_informe_completo(res: ResultadosDiseno, is_ing: bool = False) -> str
 
 4. CAPACIDAD DE TRANSMISIÓN
 {linea_consulta}{linea_alerta}
-    • Potencia Nominal por Banda ({'ecuación FHP' if res.convencion_diametro_consulta == 'paso' else 'catálogo'}): {p_nom_banda:.2f} {u_p}
-    • Factor por Arco de Contacto (C1): {res.factor_angulo_c1:.3f}
-    • Factor por Longitud de Correa (C3): {res.factor_longitud_c3:.3f}
-    • Potencia Corregida por Banda (Pn = P·C1·C3): {p_corr:.2f} {u_p}
+    • Potencia Nominal por Banda ({'ecuación FHP' if es_fhp_informe else 'catálogo'}): {p_nom_banda:.2f} {u_p}
+{linea_factor}
+    • Potencia Corregida por Banda (Pn = P · Fc): {p_corr:.2f} {u_p}
     • Número de Correas: {res.num_bandas_entero}
     • Capacidad Total de la Transmisión (Pn · z): {cap_total:.2f} {u_p}
     • Factor de Seguridad por Potencia (Capacidad / Pd): {res.factor_seguridad_potencia:.2f}

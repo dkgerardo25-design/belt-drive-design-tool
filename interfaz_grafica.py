@@ -256,7 +256,7 @@ class AppDisenoCorreas(tk.Tk):
 
         self.lbl_p1 = ttk.Label(self.frame_inputs, text="Serie de la Correa:")
         self.cmb_p_serie = ttk.Combobox(self.frame_inputs, values=[
-            "Serie A (Caucho NBR - Uso general)", 
+            "Serie A (Caucho NBR - Uso general)",
             "Serie F (Ambientes sucios / choques)"
         ], state="readonly", width=38)
         self.cmb_p_serie.set("Serie A (Caucho NBR - Uso general)")
@@ -306,9 +306,9 @@ class AppDisenoCorreas(tk.Tk):
 
         self.lbl_p2 = ttk.Label(self.frame_inputs, text="Condición de Operación:")
         self.cmb_p_condicion = ttk.Combobox(self.frame_inputs, values=[
-            "1. Servicio regular (Motores normales, bombas)", 
-            "2. Servicio irregular medio (Máquinas herramienta, ventiladores)", 
-            "3. Servicio irregular pesado (Compresores, prensas)", 
+            "1. Servicio regular (Motores normales, bombas)",
+            "2. Servicio irregular medio (Máquinas herramienta, ventiladores)",
+            "3. Servicio irregular pesado (Compresores, prensas)",
             "4. Servicio muy severo (Trituradoras, molinos)"
         ], state="readonly", width=38)
         self.cmb_p_condicion.set("1. Servicio regular (Motores normales, bombas)")
@@ -375,7 +375,7 @@ class AppDisenoCorreas(tk.Tk):
         self.tree_maquinas.heading("Maquina", text="Aplicación / Tipo de Máquina")
         self.tree_maquinas.column("Clase", width=130, anchor="w")
         self.tree_maquinas.column("Maquina", width=300, anchor="w")
-        
+
         tree_scroll = ttk.Scrollbar(self.frame_inputs, orient=tk.VERTICAL, command=self.tree_maquinas.yview)
         self.tree_maquinas.configure(yscrollcommand=tree_scroll.set)
 
@@ -421,7 +421,7 @@ class AppDisenoCorreas(tk.Tk):
         self.txt_output = tk.Text(frame_output, wrap=tk.WORD, font=("Consolas", 9))
         scrollbar = ttk.Scrollbar(frame_output, orient=tk.VERTICAL, command=self.txt_output.yview)
         self.txt_output.configure(yscrollcommand=scrollbar.set)
-        
+
         self.txt_output.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
@@ -458,12 +458,12 @@ class AppDisenoCorreas(tk.Tk):
             fila = db_auto.belt_specifications[db_auto.belt_specifications['Tipo de correa'].str.strip() == seleccion.strip()]
             if not fila.empty:
                 esp = float(fila['Espesor [mm]'].values[0])
-                
+
                 # Buscar la columna de tensión permisible de forma flexible
                 # Fuerza periférica admisible por unidad de ancho (Fu, en N/mm). El
                 # núcleo ya normaliza el nombre de esa columna al leer el Excel.
                 t_perm = float(fila['Fuerza_periferica'].values[0])
-                
+
                 mu_val = float(fila['Coef_friccion'].values[0])
                 masa_val = float(fila['Masa [kg/m2]'].values[0])
                 densidad_calc = masa_val / (esp / 1000.0) if esp > 0 else 909.1
@@ -512,7 +512,7 @@ class AppDisenoCorreas(tk.Tk):
 
     def cambiar_modo_tecnologia(self, event=None):
         tecnologia = self.cmb_tecnologia.get()
-        
+
         widgets_a_ocultar = [
             self.lbl_v1, self.cmb_v_familia, self.lbl_v2, self.cmb_v_motor, self.lbl_v3, self.cmb_v_trans,
             self.lbl_fhp_maquina, self.cmb_fhp_maquina,
@@ -609,7 +609,7 @@ class AppDisenoCorreas(tk.Tk):
 
     def cambiar_modo_planas(self, event=None):
         modo = self.cmb_p_modo.get()
-        
+
         if "Catálogo" in modo:
             self.lbl_pm_nombre.grid_remove(); self.cmb_pm_nombre.grid_remove()
             self.lbl_pm_esfuerzo.grid_remove(); self.ent_pm_esfuerzo.grid_remove()
@@ -642,7 +642,7 @@ class AppDisenoCorreas(tk.Tk):
             self.lbl_n2.config(text="Velocidad n2 (RPM) (Opcional):")
 
         r_base = 3 if "Catálogo" in modo else 5
-        
+
         self.lbl_p_par.grid(row=r_base, column=0, padx=5, pady=5, sticky="w")
         self.cmb_p_par.grid(row=r_base, column=1, columnspan=2, padx=5, pady=5, sticky="ew")
 
@@ -740,7 +740,13 @@ class AppDisenoCorreas(tk.Tk):
         opcional_pot = es_planas and "Manual" in self.cmb_p_modo.get()
         self.lbl_pot.config(text=f"Potencia Nominal ({u_pot}):" + (" (Opcional)" if opcional_pot else ""))
 
-        self.lbl_d1.config(text=f"D1 Conductora ({u_dim}) (Opcional):")
+        # En bandas en V el diámetro que se ingresa es SIEMPRE el primitivo (nominal); el
+        # núcleo calcula el exterior para designar y fabricar la polea. En bandas planas no
+        # existe esa distinción.
+        if es_planas:
+            self.lbl_d1.config(text=f"D1 Conductora ({u_dim}) (Opcional):")
+        else:
+            self.lbl_d1.config(text=f"D1 Conductora, primitivo ({u_dim}) (Opcional):")
         self.lbl_v6.config(text=f"Dist. Mínima / C1 ({u_dim}):")
         self.lbl_v7.config(text=f"Dist. Máxima / C2 ({u_dim}):")
         self.lbl_p4.config(text=f"Dist. Centros ({u_dim}) (Opcional):")
@@ -780,13 +786,13 @@ class AppDisenoCorreas(tk.Tk):
             self.ent_pm_esfuerzo, self.ent_pm_mu,
             self.ent_pm_espesor, self.ent_pm_densidad, self.ent_pm_ancho
         ]
-        
+
         for ent in campos_entrada:
             try:
                 ent.delete(0, tk.END)
             except Exception:
                 pass
-        
+
         self.chk_motor_electrico_var.set(True)
         self.chk_normalizar_var.set(True)
 
@@ -795,7 +801,7 @@ class AppDisenoCorreas(tk.Tk):
             etiqueta._ruta_svg = None          # si no, el reajuste por resize los redibuja
             etiqueta.config(text="[ Sin Gráfico ]", image="")
             etiqueta.image = None
-        
+
         messagebox.showinfo("Limpieza Exitosa", "Todos los campos han sido borrados. Listo para un nuevo problema.")
 
     def ejecutar_calculo(self):
@@ -805,7 +811,7 @@ class AppDisenoCorreas(tk.Tk):
             pot = float(pot_val) if pot_val else None
 
             n1 = float(self.ent_n1.get())
-            
+
             n2_val = self.ent_n2.get().strip()
             if n2_val:
                 n2 = float(n2_val)
@@ -819,7 +825,7 @@ class AppDisenoCorreas(tk.Tk):
                 condicion_op = self.cmb_p_condicion.get()
                 horas_rango = self.cmb_p_horas.get()
                 tipo_par_sel = self.cmb_p_par.get()
-                
+
                 c_val_str = self.ent_p_centros.get().strip()
                 c_val = float(c_val_str) if c_val_str else None
 
@@ -833,7 +839,7 @@ class AppDisenoCorreas(tk.Tk):
                     if not n2_val: raise ValueError("Para el modo Catálogo de Bandas Planas, la velocidad n2 es obligatoria.")
                     serie_texto = self.cmb_p_serie.get()
                     grupo_letra = serie_texto.split(" ")[1].replace("(", "").strip()
-                    
+
                     resultados = nucleo_diseno_planas.ejecutar_diseno_bandas_planas(
                         potencia_in=pot, n_conductora=n1, n_conducida=n2,
                         condicion_operacion=condicion_op, horas_servicio=horas_rango,
@@ -912,7 +918,7 @@ class AppDisenoCorreas(tk.Tk):
                 rutas_planos = visualizacion_correas.exportar_planos_completos(
                     resultados, is_ing=is_ing, carpeta_salida=self.carpeta_temporal)
                 informe = nucleo_diseno_correas.generar_informe_completo(resultados, is_ing=is_ing)
-                
+
                 self.txt_output.delete("1.0", tk.END)
                 self.txt_output.insert(tk.END, informe)
 
